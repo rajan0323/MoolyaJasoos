@@ -1,22 +1,28 @@
 import { NextResponse } from "next/server";
-
 import { getLowestPrice, getHighestPrice, getAveragePrice, getEmailNotifType } from "@/lib/utils";
 import { connectToDB } from "@/lib/mongoose";
 import Product from "@/lib/models/product.model";
 import { scrapeAmazonProduct } from "@/lib/scraper";
 import { generateEmailBody, sendEmail } from "@/lib/nodemailer";
 
-export const maxDuration = 60; // This function can run for a maximum of 300 seconds
+export const maxDuration = 60; // Adjusted to fit within the allowed limit
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const PRODUCTS_PER_BATCH = 5; // Adjust the number based on your processing time
+
 export async function GET(request: Request) {
   try {
+    const url = new URL(request.url);
+    const page = parseInt(url.searchParams.get('page') || '1');
+
     connectToDB();
 
-    const products = await Product.find({});
+    const products = await Product.find({})
+      .skip((page - 1) * PRODUCTS_PER_BATCH)
+      .limit(PRODUCTS_PER_BATCH);
 
-    if (!products) throw new Error("No product fetched");
+    if (!products.length) throw new Error("No products fetched");
 
     // ======================== 1 SCRAPE LATEST PRODUCT DETAILS & UPDATE DB
     const updatedProducts = await Promise.all(
@@ -46,7 +52,8 @@ export async function GET(request: Request) {
           {
             url: product.url,
           },
-          product
+          product,
+          { new: true }
         );
 
         // ======================== 2 CHECK EACH PRODUCT'S STATUS & SEND EMAIL ACCORDINGLY
@@ -75,8 +82,11 @@ export async function GET(request: Request) {
     return NextResponse.json({
       message: "Ok",
       data: updatedProducts,
+      nextPage: products.length < PRODUCTS_PER_BATCH ? null : page + 1
     });
   } catch (error: any) {
-    throw new Error(`Failed to get all products: ${error.message}`);
+    return NextResponse.json({
+      message: `Failed to get all products: ${error.message}`,
+    }, { status: 500 });
   }
 }
